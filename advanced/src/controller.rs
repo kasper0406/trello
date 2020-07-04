@@ -57,7 +57,11 @@ unsafe impl Send for Controller {}
 unsafe impl Sync for Controller {}
 
 fn normalize(value: i32) -> f32 {
-    return ((value as f32) - 127f32) / 1.28;
+    let normalized = ((value as f32) - 127f32) / 128f32;
+    if normalized.abs() < 0.02 {
+        return 0.0;
+    }
+    normalized
 }
 
 impl Controller {

@@ -181,24 +181,24 @@ impl TelloGram {
     }
 
     fn tello_position(position: f32) -> u64 {
-        1024u64 + (position * 660f32) as u64
+        (1024f32 + (position * 660f32)) as u64
     }
 
     fn from(command: Commands, seq: u16) -> Vec<u8> {
         match command {
             Commands::VideoRequest => TelloGram::construct_package(PackageType::Data2, 0x25, seq, &[]),
             Commands::Takeoff => TelloGram::construct_package(PackageType::Set, 0x54, seq, &[]),
-            Commands::Land => TelloGram::construct_package(PackageType::Set, 0x55, seq, &[]),
+            Commands::Land => TelloGram::construct_package(PackageType::Set, 0x55, seq, &vec![0]),
             Commands::Joystick { lx, ly, rx, ry } => {
-                let mut encoded_position = Self::tello_position(rx) & 0x7ff;
-                encoded_position |= (Self::tello_position(ry) & 0x7ff) << 11;
-                encoded_position |= (Self::tello_position(ly) & 0x7ff) << 22;
-                encoded_position |= (Self::tello_position(lx) & 0x7ff) << 33;
+                let mut encoded_position = Self::tello_position(lx) & 0x7ff;
+                encoded_position |= (Self::tello_position(-ly) & 0x7ff) << 11;
+                encoded_position |= (Self::tello_position(-ry) & 0x7ff) << 22;
+                encoded_position |= (Self::tello_position(rx) & 0x7ff) << 33;
                 // encoded_position |= 1u64 << 44; // if sports mode enabled
 
                 let mut payload = [0u8; 11];
                 for i in 0..6 {
-                    payload[i] = (encoded_position >> 8 * i) as u8;
+                    payload[i] = (encoded_position >> (8 * i)) as u8;
                 }
 
                 let now = Utc::now();
@@ -321,21 +321,21 @@ impl Tello {
     }
 
     fn takeoff(&self) {
-        self.cmd_queue.send(&TelloGram::from(
+        self.send_raw(&TelloGram::from(
             Commands::Takeoff,
             self.seq_nr.fetch_add(1, Ordering::SeqCst)
-        )).unwrap();
+        ));
     }
 
     fn land(&self) {
-        self.cmd_queue.send(&TelloGram::from(
+        self.send_raw(&TelloGram::from(
             Commands::Land,
             self.seq_nr.fetch_add(1, Ordering::SeqCst)
-        )).unwrap();
+        ));
     }
 
     fn set_joystick(&self, controller: controller::State) {
-        self.cmd_queue.send(&TelloGram::from(
+        self.send_raw(&TelloGram::from(
             Commands::Joystick {
                 lx: controller.joystick_left_x,
                 ly: controller.joystick_left_y,
@@ -343,7 +343,16 @@ impl Tello {
                 ry: controller.joystick_right_y
             },
             0 // unused
-        )).unwrap();
+        ));
+    }
+
+    fn send_raw(&self, data: &[u8]) {
+        let gram = unsafe { &*data.as_ptr().cast::<TelloGram>() };
+        if !gram.is_valid() {
+            println!("Sending invalid TelloGram {:?}", &data);
+        }
+
+        self.cmd_queue.send(data).unwrap();
     }
 
     fn handle_tello_msg(is_running: Arc<AtomicBool>,
@@ -413,6 +422,7 @@ fn main() {
     let is_running = Arc::new(AtomicBool::new(true));
 
     let (controller_events_sender, controller_events_receiver) = channel();
+
     let mut controller = controller::Controller::get_controller(0).unwrap();
     controller.set_event_listener(controller_events_sender);
     let controller_state = controller.get_state();
@@ -425,10 +435,10 @@ fn main() {
 
     let tello_cmd_loop = thread::spawn(move || {
         loop {
-            if let Ok(event) = controller_events_receiver.recv_timeout(Duration::from_millis(1)) {
+            if let Ok(event) = controller_events_receiver.recv_timeout(Duration::from_millis(10)) {
                 match event {
                     controller::Event::XPress => tello.takeoff(),
-                    controller::Event::CirclePress => tello.land(),
+                    controller::Event::CirclePress =>tello.land(),
                     _ => ()
                 }
             } else {
